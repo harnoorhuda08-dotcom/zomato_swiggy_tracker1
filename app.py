@@ -3,16 +3,36 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 import streamlit as st
+from transformers import pipeline
 
 # --------------------
 # CONFIG
 # --------------------
 NEWSAPI_KEY = st.secrets.get("NEWSAPI_KEY", os.getenv("NEWSAPI_KEY", ""))
-
 BRANDS = ["Zomato", "Swiggy"]
 
 # --------------------
-# HELPERS
+# LOAD SUMMARIZER (AI)
+# --------------------
+@st.cache_resource
+def load_summarizer():
+    """Load a smaller, faster summarizer model."""
+    return pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+
+summarizer = load_summarizer()
+
+def summarize_text(text: str) -> str:
+    """Run AI summarization on combined text."""
+    if not text.strip():
+        return "(no mentions)"
+    try:
+        summary = summarizer(text, max_length=100, min_length=30, do_sample=False)
+        return summary[0]["summary_text"]
+    except Exception as e:
+        return f"(error during summarization: {e})"
+
+# --------------------
+# FETCH NEWS
 # --------------------
 @st.cache_data(ttl=60*60)
 def fetch_mentions(brand: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -45,25 +65,24 @@ def build_dataset():
     dfs = [fetch_mentions(b, start_s, end_s) for b in BRANDS]
     df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-    # “Summary” = top 5 headlines joined (free pseudo-summary)
     summaries = []
     for b in BRANDS:
         subset = df[df["brand"] == b].head(5)
-        joined = " | ".join([t for t in subset["title"].dropna().tolist()])
-        summaries.append({"brand": b, "summary": joined if joined else "(no mentions)"})
+        joined = " ".join([t for t in subset["title"].dropna().tolist()])
+        summaries.append({"brand": b, "summary": summarize_text(joined)})
     summary_df = pd.DataFrame(summaries)
     return df, summary_df
 
 # --------------------
-# UI
+# STREAMLIT UI
 # --------------------
 st.set_page_config(page_title="Zomato vs Swiggy Tracker", page_icon="🍴", layout="wide")
-st.title("🍴 Zomato vs Swiggy — Press Tracker (last 24h)")
+st.title("🍴 Zomato vs Swiggy — AI News Tracker (last 24h)")
 
 if st.button("🔄 Refresh now"):
     st.cache_data.clear()
 
-with st.spinner("Fetching latest mentions..."):
+with st.spinner("Fetching latest mentions & generating AI summaries..."):
     mentions_df, summaries_df = build_dataset()
 
 col1, col2 = st.columns(2)
@@ -83,6 +102,6 @@ if not mentions_df.empty:
 else:
     st.info("No mentions found.")
 
-st.subheader("🤖 AI-Lite Summaries")
+st.subheader("🤖 AI Summaries")
 for _, r in summaries_df.iterrows():
     st.markdown(f"### {r['brand']}\n{r['summary']}")
